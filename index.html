@@ -1,0 +1,269 @@
+import React, { useState, useEffect } from 'react';
+import { Smartphone, CheckCircle2, Search, Info, RefreshCw, AlertTriangle } from 'lucide-react';
+
+const App = () => {
+  // 狀態管理
+  const [phones, setPhones] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [dataSource, setDataSource] = useState('google_sheet');
+  const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('全部');
+  const [selectedPhone, setSelectedPhone] = useState('');
+
+  // --- Google Sheet 設定 ---
+  // 這裡已經換成您提供的表單 ID，並使用 Google 視覺化 API 直接匯出 CSV 的網址
+  const GOOGLE_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1LsuBSpaKrnXN6GKM-6AFMbA9T286_TK3u9sQ9bzl2Pc/gviz/tq?tqx=out:csv&gid=600333233';
+
+  // 簡易 CSV 解析器 (處理引號與逗號)
+  const parseCSVRow = (str) => {
+    let result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < str.length; i++) {
+      let char = str[i];
+      if (char === '"' && str[i + 1] === '"') { current += '"'; i++; }
+      else if (char === '"') { inQuotes = !inQuotes; }
+      else if (char === ',' && !inQuotes) { result.push(current.trim()); current = ''; }
+      else { current += char; }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  // 載入資料的函數
+  const fetchData = async () => {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(GOOGLE_SHEET_CSV_URL);
+      if (!response.ok) throw new Error('網路回應錯誤');
+      
+      const csvText = await response.text();
+      
+      // 若回應是 HTML，通常代表沒有公開權限
+      if (csvText.trim().toLowerCase().startsWith('<!doctype html>')) {
+        throw new Error('權限不足');
+      }
+
+      const rows = csvText.split('\n').filter(row => row.trim() !== '');
+      if (rows.length <= 1) {
+        setPhones([]);
+        setIsLoading(false);
+        return;
+      }
+
+      const headers = parseCSVRow(rows[0]);
+      
+      // 智慧比對欄位名稱
+      const findColIndex = (keywords) => headers.findIndex(h => keywords.some(kw => h.includes(kw)));
+      let idIdx = findColIndex(['編號', 'ID', '設備', '財產']);
+      let modelIdx = findColIndex(['型號', '名稱', '手機', '設備名稱']);
+      let statusIdx = findColIndex(['狀態', '借用', '可用', '是否']);
+
+      // 預設防呆 (若找不到標題，預設第一欄是編號、第二欄是型號)
+      if (idIdx === -1) idIdx = 0;
+      if (modelIdx === -1) modelIdx = 1;
+
+      const parsedData = [];
+      for (let i = 1; i < rows.length; i++) {
+        const cols = parseCSVRow(rows[i]);
+        if (cols.length < 2) continue;
+
+        const id = cols[idIdx]?.replace(/^"|"$/g, '') || '未知編號';
+        const model = cols[modelIdx]?.replace(/^"|"$/g, '') || '未知型號';
+        const rawStatus = statusIdx !== -1 && cols[statusIdx] ? cols[statusIdx].replace(/^"|"$/g, '') : '';
+
+        // 判斷是否可借用：只要狀態「不包含」已借出、維修中等字眼，就視為可借用
+        const isUnavailable = /借出|維修|遺失|不可|損壞|無/.test(rawStatus);
+
+        if (!isUnavailable) {
+          parsedData.push({ id, model, status: 'available', rawStatus });
+        }
+      }
+      
+      setPhones(parsedData);
+      setDataSource('google_sheet');
+    } catch (error) {
+      console.error('讀取 Google Sheet 失敗:', error);
+      if (error.message === '權限不足') {
+         setError('讀取失敗：請將您的 Google 表單「共用設定」改為「知道連結的任何人皆可查看」。');
+      } else {
+         setError('讀取表單資料失敗，請確認表單網址是否正確且已公開。');
+      }
+      setPhones([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 初始載入
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const tabs = ['全部', 'I', 'A', 'O', 'C'];
+
+  // 搜尋與頁籤過濾邏輯
+  const filteredPhones = phones.filter(phone => {
+    const matchesSearch = phone.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          phone.id.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesTab = activeTab === '全部' || phone.id.toUpperCase().startsWith(activeTab);
+    return matchesSearch && matchesTab;
+  });
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-800">
+      <div className="max-w-5xl mx-auto">
+        
+        {/* 標頭與標題 */}
+        <header className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
+          <Smartphone className="w-8 h-8 text-blue-600" />
+          專案可借用手機清單
+        </h1>
+        <p className="text-slate-500 mt-2">
+          查看目前專案中可供借用的測試機設備。
+          {dataSource === 'google_sheet' && !error && (
+            <span className="inline-flex items-center gap-1 ml-2 text-green-600 text-sm bg-green-50 px-2 py-1 rounded-md">
+              <CheckCircle2 className="w-4 h-4" /> 已同步最新表單資料
+            </span>
+          )}
+        </p>
+      </div>
+      
+      <button 
+            onClick={fetchData}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg shadow-sm hover:bg-slate-50 transition-colors text-sm font-medium"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-blue-500' : 'text-slate-600'}`} />
+            重新整理
+          </button>
+        </header>
+
+        {/* 搜尋列 */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-8">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+            <input 
+              type="text" 
+              placeholder="搜尋手機型號或編號 (例如: iPhone 或 P-001)..." 
+              className="w-full pl-10 pr-4 py-3 rounded-lg bg-slate-50 border-none focus:ring-2 focus:ring-blue-500 outline-none transition-all text-slate-700 placeholder-slate-400"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* 狀態列 */}
+    <div className="mb-4 flex items-center justify-between text-sm text-slate-600">
+      <span>
+        共找到 <strong className="text-blue-600 text-lg">{filteredPhones.length}</strong> 台可借用設備
+      </span>
+    </div>
+
+    {/* 錯誤提示 */}
+    {error && (
+      <div className="mb-8 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-700">
+        <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+        <div>
+          <h4 className="font-bold mb-1">無法載入資料</h4>
+          <p className="text-sm">{error}</p>
+          <p className="text-sm mt-2 font-medium">👉 請至 Google 表單右上角點擊「共用」➡️「一般存取權」➡️ 變更為「知道連結的任何人」。</p>
+        </div>
+      </div>
+    )}
+
+    {/* 頁籤與下拉選單區 */}
+    <div className="mb-6 flex flex-wrap gap-2">
+      {tabs.map(tab => (
+        <button
+          key={tab}
+          onClick={() => {
+            setActiveTab(tab);
+            setSelectedPhone(''); // 切換頁籤時重置選擇
+          }}
+          className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+            activeTab === tab 
+              ? 'bg-blue-600 text-white shadow-md' 
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          {tab}
+        </button>
+      ))}
+    </div>
+
+    {/* 下拉選單顯示區 */}
+    {isLoading ? (
+      <div className="flex flex-col items-center justify-center py-20">
+        <RefreshCw className="w-10 h-10 animate-spin text-blue-500 mb-4" />
+        <p className="text-slate-500">載入設備資料中...</p>
+      </div>
+    ) : (
+      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+        <label className="block text-sm font-semibold text-slate-700 mb-3">
+          目前可借用的手機：
+        </label>
+        
+        {filteredPhones.length > 0 ? (
+          <div className="flex flex-col gap-4">
+            <select 
+              className="w-full md:w-1/2 p-3 rounded-lg bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 text-lg cursor-pointer font-medium"
+              value={selectedPhone}
+              onChange={(e) => setSelectedPhone(e.target.value)}
+            >
+              <option value="" disabled>-- 點擊展開可借用設備 --</option>
+              {filteredPhones.map(phone => (
+                <option key={phone.id} value={phone.id}>
+                  {phone.id} - {phone.model}
+                </option>
+              ))}
+            </select>
+
+            {selectedPhone && (
+              <div className="mt-4 p-5 bg-blue-50 border border-blue-100 rounded-xl inline-block max-w-max">
+                <p className="text-sm text-blue-600 font-medium mb-1">您選擇的設備：</p>
+                <p className="text-2xl font-bold text-slate-900">
+                  {selectedPhone} - {phones.find(p => p.id === selectedPhone)?.model}
+                </p>
+              </div>
+            )}
+
+            {/* 簡單卡片顯示區 */}
+            <div className="mt-6 border-t border-slate-100 pt-6">
+              <h3 className="text-sm font-semibold text-slate-500 mb-4">或者直接點選下方卡片快速查看：</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {filteredPhones.map((phone) => (
+                  <div 
+                    key={phone.id} 
+                    onClick={() => setSelectedPhone(phone.id)}
+                    className={`p-4 rounded-xl border transition-all cursor-pointer hover:shadow-md flex flex-col justify-center ${
+                      selectedPhone === phone.id 
+                        ? 'border-blue-500 bg-blue-50 shadow-sm' 
+                        : 'border-slate-200 bg-white hover:border-blue-300'
+                    }`}
+                  >
+                    <div className="text-sm font-bold text-blue-600 mb-1">{phone.id}</div>
+                    <div className="text-slate-700 font-medium text-sm line-clamp-2">{phone.model}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-8 text-center text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+            目前此分類下沒有可借用的設備。
+          </div>
+        )}
+      </div>
+    )}
+
+      </div>
+    </div>
+  );
+};
+
+export default App;
